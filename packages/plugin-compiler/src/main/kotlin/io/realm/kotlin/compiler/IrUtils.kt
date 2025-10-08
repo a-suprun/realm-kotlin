@@ -206,30 +206,51 @@ val ClassDescriptor.isBaseRealmObject: Boolean
 val realmObjectTypes: Set<Name> = setOf(REALM_OBJECT, EMBEDDED_REALM_OBJECT, ASYMMETRIC_REALM_OBJECT)
 val realmObjectClassIds = realmObjectTypes.map { name -> ClassId(PACKAGE_TYPES, name) }
 
+private val firIsBaseRealmObjectRecursionGuard = ThreadLocal.withInitial { mutableSetOf<FirClassSymbol<*>>() }
+
 // This is the K2 equivalent of our PSI hack to determine if a symbol has a RealmObject base class.
 // There is currently no way to determine this within the resolved type system and there is
 // probably no such option around the corner.
 // https://kotlinlang.slack.com/archives/C03PK0PE257/p1694599154558669
 @OptIn(SymbolInternals::class)
 val FirClassSymbol<*>.isBaseRealmObject: Boolean
-    get() = this.classKind == ClassKind.CLASS &&
-        this.fir.superTypeRefs.any { typeRef ->
-            when (typeRef) {
-                // In SUPERTYPES stage
-                is FirUserTypeRef -> {
-                    typeRef.qualifier.last().name in realmObjectTypes &&
-                        // Disregard constructor invocations as that means that it is a Realm Java class
-                        !(
-                            typeRef.source?.run { treeStructure.getParent(lighterASTNode) }
-                                ?.tokenType?.let { it == KtStubElementTypes.CONSTRUCTOR_CALLEE }
-                                ?: false
-                            )
-                }
-                // After SUPERTYPES stage
-                is FirResolvedTypeRef -> typeRef.type.classId in realmObjectClassIds
-                else -> false
-            }
+    get() {
+        val className = this.classId.asString()
+        println("isBaseRealmObject: Checking $className")
+        // Prevent StackOverflowError from recursive calls during FIR type resolution.
+        val processingSet = firIsBaseRealmObjectRecursionGuard.get()
+        if (processingSet.contains(this)) {
+            // Recursive call detected for this symbol, break the cycle.
+            // It's safer to return false here to prevent a StackOverflowError.
+            // The "true" status might be determined by a non-recursive path if one exists.
+            println("isBaseRealmObject: recursion detected for $className. Breaking loop.")
+            return false
         }
+
+        processingSet.add(this)
+        try {
+            return this.classKind == ClassKind.CLASS &&
+                    this.fir.superTypeRefs.any { typeRef ->
+                        when (typeRef) {
+                            // In SUPERTYPES stage
+                            is FirUserTypeRef -> {
+                                typeRef.qualifier.last().name in realmObjectTypes &&
+                                        // Disregard constructor invocations as that means that it is a Realm Java class
+                                        !(
+                                                typeRef.source?.run { treeStructure.getParent(lighterASTNode) }
+                                                    ?.tokenType?.let { it == KtStubElementTypes.CONSTRUCTOR_CALLEE }
+                                                    ?: false
+                                                )
+                            }
+                            // After SUPERTYPES stage
+                            is FirResolvedTypeRef -> typeRef.type.classId in realmObjectClassIds
+                            else -> false
+                        }
+                    }
+        } finally {
+            processingSet.remove(this)
+        }
+    }
 
 // JetBrains already have a method `fun IrAnnotationContainer.hasAnnotation(symbol: IrClassSymbol)`
 // It is unclear exactly what the difference is and how to get a ClassSymbol from a ClassId,

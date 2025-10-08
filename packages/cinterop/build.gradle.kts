@@ -426,7 +426,8 @@ val buildJVMSharedLibs: TaskProvider<Task> by tasks.registering {
     } else if (HOST_OS.isWindows()) {
         buildSharedLibrariesForJVMWindows()
     } else {
-        throw IllegalStateException("Building JVM libraries on this platform is not supported: $HOST_OS")
+        logger.warn("Building JVM libraries on this platform is not supported: $HOST_OS")
+//        throw IllegalStateException("Building JVM libraries on this platform is not supported: $HOST_OS")
     }
 }
 
